@@ -1,0 +1,83 @@
+cabal-version:      2.4
+name:               salty-bubbles
+version:            0.1.0.0
+
+-- A short (one-line) description of the package.
+-- synopsis:
+
+-- A longer description of the package.
+-- description:
+
+-- A URL where users can report bugs.
+-- bug-reports:
+
+license: Apache-2.0
+license-files: LICENSE
+author:             Bolaji Ahmad
+maintainer:         bolaji@outliant.com
+
+-- A copyright notice.
+-- copyright:
+-- category:
+-- extra-source-files: CHANGELOG.md
+
+flag defer-plugin-errors
+    description:
+        Defer errors from the plugin, useful for things like Haddock that can't handle it.
+    default: False
+    manual: True
+
+common lang
+    default-extensions:
+      DataKinds
+      MultiParamTypeClasses
+      OverloadedStrings
+      ScopedTypeVariables
+      RecordWildCards
+      TemplateHaskell
+      TypeApplications
+      TypeFamilies
+      NamedFieldPuns
+      NumericUnderscores
+      LambdaCase
+      BangPatterns
+    default-language:   Haskell2010
+    ghc-options:
+      -Werror -Wall -Wnoncanonical-monad-instances
+      -Wincomplete-uni-patterns -Wincomplete-record-updates
+      -Wredundant-constraints -Widentities -rtsopts
+      -- See Plutus Tx readme
+      -fobject-code -fno-ignore-interface-pragmas -fno-omit-interface-pragmas
+    if flag(defer-plugin-errors)
+        ghc-options: -fplugin-opt PlutusTx.Plugin:defer-errors
+
+library
+    import: lang
+    exposed-modules:
+      SaltyBubbles
+    build-depends:
+      base >= 4.9 && < 5,
+      aeson,
+      bytestring,
+      cardano-api,
+      containers,
+      freer-extras,
+      plutus-tx-plugin,
+      plutus-tx,
+      plutus-ledger,
+      plutus-ledger-api,
+      text,
+      data-default,
+      serialise,
+    hs-source-dirs: src
+
+executable create-auction-sc
+  import:         lang
+  hs-source-dirs: app
+  main-is:        Main.hs
+  ghc-options:    -threaded
+  build-depends:
+    , base >= 4.9 && < 5
+    , salty-bubbles
+    , cardano-api
+    , optparse-applicative
