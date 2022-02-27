@@ -7,8 +7,9 @@ policyScript=$2
 policyId=$3
 tokenName=$4
 mintCount=$5
-address=$(cat ~/$BLOCKCHAIN_PREFIX/seller.addr)
-holderAddress=$(cat ~/$BLOCKCHAIN_PREFIX/seller.addr)
+metadata=$6
+address=$(cat ~/cnft/keys/payment.addr)
+holderAddress=$(cat ~/cnft/keys/payment.addr)
 
 cardano-cli transaction build \
   --alonzo-era \
@@ -17,14 +18,16 @@ cardano-cli transaction build \
   --tx-in-collateral $utxo \
   --tx-out "$holderAddress + 1758582 lovelace + $mintCount $policyId.$tokenName" \
   --mint="$mintCount $policyId.$tokenName" \
-  --minting-script-file $policyScript \
-  --mint-redeemer-value [] \
+  --mint-script-file $policyScript \
   --change-address $address \
-  --protocol-params-file scripts/$BLOCKCHAIN_PREFIX/protocol-parameters.json \
+  --invalid-hereafter 52922965 \
+  --metadata-json-file $metadata \
+  --protocol-params-file ~/cnft/protocol-params.json \
   --out-file temp/mint_tx.body
 
 cardano-cli transaction sign  \
-  --signing-key-file ~/$BLOCKCHAIN_PREFIX/seller.skey  \
+  --signing-key-file ~/cnft/keys/payment.skey  \
+  --signing-key-file ~/cnft/policy/policy.skey \
   $BLOCKCHAIN \
   --tx-body-file temp/mint_tx.body \
   --out-file temp/mint_tx.signed

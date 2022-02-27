@@ -11,6 +11,12 @@
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE BangPatterns               #-}
 
+{-# LANGUAGE DerivingStrategies         #-}
+{-# LANGUAGE FlexibleContexts           #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE RecordWildCards            #-}
+{-# LANGUAGE TypeOperators              #-}
+
 module SaltyBubbles
   (
       auctionScript
@@ -37,70 +43,80 @@ import           Prelude              (Show (..))
 --------------------------------------------------------------------------------------------------
 -- On Chain Code
 --------------------------------------------------------------------------------------------------
-data AuctionDetails = AuctionDetails
-    { adSeller             :: !PubKeyHash
-    , adCurrency           :: !CurrencySymbol
-    , adToken              :: !TokenName
-    , adDeadline           :: !POSIXTime
-    , adStartTime          :: !POSIXTime -- 1596000000000 (For the playground only)
-    , adMinBid             :: !Integer
-    , adMarketplacePercent :: !Integer
-    , adMarketplaceAddress :: !PubKeyHash
-    } deriving (Show, Generic, ToJSON, FromJSON)
+data ContractInfo = ContractInfo
+  { policyId             :: !CurrencySymbol
+  , sellerAddress        :: !PubKeyHash
+  , royalty1             :: !(PubKeyHash, Integer)
+  , royalty2             :: !(PubKeyHash, Integer)
+  , minPrice             :: !Integer
+  }
 
-instance Eq AuctionDetails where
+contractInfo :: ContractInfo
+contractInfo = ContractInfo 
+  { policyId = "a0be1b06069518f7e1146fb2c98d78669e975d90182f01d91e2c5b31"
+  , sellerAddress = "c6d60bd249a9e48f4d9e820751881887804343b4c02cdaaa5511f725"
+  , royalty1 = ("af0d47ee09465e839be5ef78778ebe154711db448637db27df6912c2", 5000) -- 2.4% 1.6%
+  , royalty2 = ("af0d47ee09465e839be5ef78778ebe154711db448637db27df6912c2", 5000) -- 0.4%
+  , minPrice = 70000000
+  }
+
+PlutusTx.unstableMakeIsData ''ContractInfo
+PlutusTx.makeLift ''ContractInfo
+
+
+data TradeDetails = TradeDetails
+  { tdToken              :: !TokenName
+  , tdDeadline           :: !POSIXTime 
+  , tdStartTime          :: !POSIXTime
+  } deriving (Show, Generic, ToJSON, FromJSON)
+
+instance Eq TradeDetails where
     {-# INLINABLE (==) #-}
     a == b
-      =  (adSeller             a == adSeller                  b)
-      && (adCurrency           a == adCurrency                b)
-      && (adToken              a == adToken                   b)
-      && (adDeadline           a == adDeadline                b)
-      && (adStartTime          a == adStartTime               b)
-      && (adMarketplacePercent a == adMarketplacePercent      b)
-      && (adMarketplaceAddress a == adMarketplaceAddress      b)
-      && (adMinBid             a == adMinBid                  b)
+      =  (tdToken              a == tdToken                   b)
+      && (tdDeadline           a == tdDeadline                b)
+      && (tdStartTime          a == tdStartTime               b)
 
-PlutusTx.unstableMakeIsData ''AuctionDetails -- Make Stable when live
-PlutusTx.makeLift ''AuctionDetails
+PlutusTx.unstableMakeIsData ''TradeDetails -- Make Stable when live
+PlutusTx.makeLift ''TradeDetails
 
-data BidDetails = BidDetails
-    { bdBidder :: !PubKeyHash
-    , bdBid    :: !Integer
+data OfferDetails = OfferDetails
+    { tradeOwner       :: !PubKeyHash
+    , requestedAmount    :: !Integer
     } deriving Show
 
-instance Eq BidDetails where
+instance Eq OfferDetails where
     {-# INLINABLE (==) #-}
     a == b
-      =  (bdBidder a == bdBidder b)
-      && (bdBid    a == bdBid    b)
+      =  (tradeOwner a == tradeOwner b)
+      && (requestedAmount    a == requestedAmount    b)
 
-PlutusTx.unstableMakeIsData ''BidDetails -- Make Stable when live
-PlutusTx.makeLift ''BidDetails
+PlutusTx.unstableMakeIsData ''OfferDetails -- Make Stable when live
+PlutusTx.makeLift ''OfferDetails
 
-data AuctionDatum = AuctionDatum
-    { adAuctionDetails :: !AuctionDetails
-    , adHighestBid     :: !(Maybe BidDetails)
+
+data TradeDatum = TradeDatum
+    { tdTrade :: !TradeDetails
     } deriving Show
 
-instance Eq AuctionDatum where
+instance Eq TradeDatum where
     {-# INLINABLE (==) #-}
     a == b
-      =  (adAuctionDetails a == adAuctionDetails b)
-      && (adHighestBid     a == adHighestBid     b)
+      =  (tdTrade a == tdTrade b)
 
-PlutusTx.unstableMakeIsData ''AuctionDatum -- Make Stable when live
-PlutusTx.makeLift ''AuctionDatum
+PlutusTx.unstableMakeIsData ''TradeDatum -- Make Stable when live
+PlutusTx.makeLift ''TradeDatum
 
-data AuctionRedeemer = Bid BidDetails | Close
+data TradeRedeemer = Buy OfferDetails | Close
     deriving Show
 
-PlutusTx.unstableMakeIsData ''AuctionRedeemer -- Make Stable when live
-PlutusTx.makeLift ''AuctionRedeemer
+PlutusTx.unstableMakeIsData ''TradeRedeemer -- Make Stable when live
+PlutusTx.makeLift ''TradeRedeemer
 
 data Auctioning
 instance Scripts.ValidatorTypes Auctioning where
-    type instance DatumType Auctioning = AuctionDatum
-    type instance RedeemerType Auctioning = AuctionRedeemer
+    type instance DatumType Auctioning = TradeDatum
+    type instance RedeemerType Auctioning = TradeRedeemer
 
 -- Returns an Integer whose value is 'percent' percent greater than input (rounded down)
 {-# INLINABLE increasePercent #-}
@@ -131,20 +147,20 @@ applyPercent :: Integer -> Lovelaces -> Percent -> Lovelaces
 applyPercent divider inVal pct = (inVal * pct) `divide` divider
 
 {-# INLINABLE payoutIsValid #-}
-payoutIsValid :: Lovelaces -> TxInfo -> PubKeyHash -> PubKeyHash -> Percent -> Bool
-payoutIsValid total info seller marketplace percent =
-  let
-    marketPlaceAmount = if percent == 0
-      then 0
-      else max minAda ((total * percent) `divide` 1000)
+payoutIsValid :: ContractInfo -> Lovelaces -> TxInfo -> Bool
+payoutIsValid info total txInfo =
+  let 
+    outliantAmount = max minAda ((total * (snd $ royalty1 info)) `divide` 100)
+    charityAmount = max minAda ((total * (snd $ royalty2 info)) `divide` 100)
+    sellerAmount = total - outliantAmount - charityAmount
 
-    sellerAmount = total - marketPlaceAmount
-
-  in traceIfFalse "Marketplace not paid!"
-      (lovelacesPaidTo info marketplace >= marketPlaceAmount)
-  && traceIfFalse "Marketplace not paid!"
-      (lovelacesPaidTo info seller >= sellerAmount)
-
+  in traceIfFalse "royalties not paid"
+    (
+      lovelacesPaidTo txInfo (fst $ royalty1 info) >= charityAmount 
+        && lovelacesPaidTo txInfo (fst $ royalty2 info) >= outliantAmount
+    )
+    && traceIfFalse "seller not paid"
+      (lovelacesPaidTo txInfo (sellerAddress info) >= sellerAmount)
 
 -------------------------------------------------------------------------------
 
@@ -170,89 +186,37 @@ getOnlyScriptInput info =
   in txOutValue . txInInfoResolved $ input
 
 {-# INLINABLE mkAuctionValidator #-}
-mkAuctionValidator :: AuctionDatum -> AuctionRedeemer -> ScriptContext -> Bool
-mkAuctionValidator datum redeemer ctx =
+mkAuctionValidator :: ContractInfo -> TradeDatum -> TradeRedeemer -> ScriptContext -> Bool
+mkAuctionValidator cInfo datum redeemer ctx =
   -- Always perform the input check
   traceIfFalse "wrong input value" correctInputValue
     && case redeemer of
-        Bid bd ->
-          traceIfFalse "bid too low"        (sufficientBid $ bdBid bd)
-            && traceIfFalse "wrong output datum" (correctBidOutputDatum bd)
-            && traceIfFalse "wrong output value" correctBidOutputValue
-            && traceIfFalse "wrong refund"       correctBidRefund
-            && traceIfFalse "too late"           correctBidSlotRange
+        Buy OfferDetails{..} -> 
+          traceIfFalse "minimum price not met" (sufficientBid requestedAmount)
+            && traceIfFalse "too late" correctSlotRange
+            && traceIfFalse "expect buyer to get value" (getsValue tradeOwner tokenValue)
+              && payoutIsValid cInfo requestedAmount info
+
           where
-            -- Ensure the amount is great than the current
-            -- min bid, e.g. the reserve price or last bid.
+            -- Verify that the offer amount is greater than the minimum price
             sufficientBid :: Integer -> Bool
-            sufficientBid amount = amount >= minBid where
-              minBid = maybe (adMinBid $ adAuctionDetails datum) bdBid (adHighestBid datum) + 1
+            sufficientBid amount = amount > (minPrice cInfo)
 
-            ownOutput   :: TxOut
-            outputDatum :: AuctionDatum
-
-            (!ownOutput, !outputDatum) = case getContinuingOutputs ctx of
-              [o] -> case txOutDatumHash o of
-                Nothing -> traceError "wrong output type"
-                Just h -> case findDatum h info of
-                  Nothing -> traceError "datum not found"
-                  Just (Datum d) ->  case PlutusTx.fromBuiltinData d of
-                    Just !ad' -> (o, ad')
-                    Nothing  -> traceError "error decoding data"
-              _ -> traceError "expected exactly one continuing output"
-
-            -- Make sure we are setting the next datum correctly
-            -- Everything should be the same, but we should
-            -- update the latest bid.
-            correctBidOutputDatum :: BidDetails -> Bool
-            correctBidOutputDatum b
-              = outputDatum == datum { adHighestBid = Just b }
-
-            oldBidAmount :: Integer
-            !oldBidAmount = maybe 0 bdBid . adHighestBid $ datum
-
-            bidDiff :: Integer
-            bidDiff = bdBid bd - oldBidAmount
-
-            -- The new value on the script should be the tokenValue
-            correctBidOutputValue :: Bool
-            correctBidOutputValue =
-              txOutValue ownOutput `Value.geq` (actualScriptValue <> Ada.lovelaceValueOf bidDiff)
-
-            correctBidRefund :: Bool
-            !correctBidRefund = case adHighestBid datum of
-              Nothing -> True
-              Just b -> lovelacesPaidTo info (bdBidder b) >= (bdBid b)
-
-            -- Bidding is allowed if the start time is before the tx interval
-            -- deadline is later than the valid tx
-            -- range. The deadline is in the future.
-            correctBidSlotRange :: Bool
-            !correctBidSlotRange
-              =  (adDeadline $ adAuctionDetails datum) `after` txInfoValidRange info
-              && (adStartTime $ adAuctionDetails datum) `before` txInfoValidRange info
-
+            -- Buying is allowed until the deadline
+            correctSlotRange :: Bool
+            !correctSlotRange
+              =  (tdDeadline $ tdTrade datum) `after` txInfoValidRange info
         Close ->
           let
             -- Closing is allowed if the deadline is before than the valid tx
             -- range. The deadline is past.
             correctCloseSlotRange :: Bool
-            !correctCloseSlotRange = (adDeadline $ adAuctionDetails datum) `before` txInfoValidRange info
+            !correctCloseSlotRange = (tdDeadline $ tdTrade datum) `before` txInfoValidRange info
 
             in traceIfFalse "too early" correctCloseSlotRange
-            && case adHighestBid datum of
-                Nothing
-                  -> traceIfFalse
+            &&traceIfFalse
                       "expected seller to get token"
-                      (getsValue (adSeller $ adAuctionDetails datum) tokenValue)
-                Just BidDetails{..}
-                  -> traceIfFalse
-                      "expected highest bidder to get token"
-                      (getsValue bdBidder tokenValue)
-                  && payoutIsValid bdBid info
-                        (adSeller $ adAuctionDetails datum)
-                        (adMarketplaceAddress $ adAuctionDetails datum)
-                        (adMarketplacePercent $ adAuctionDetails datum)
+                      (getsValue (sellerAddress cInfo) tokenValue)
 
     where
     --    --------------------------------------------------------------------------------------------------
@@ -263,19 +227,22 @@ mkAuctionValidator datum redeemer ctx =
 
         -- The asset we are auctioning as a Value
         tokenValue :: Value
-        tokenValue = Value.singleton (adCurrency $ adAuctionDetails datum) (adToken $ adAuctionDetails datum) 1
+        tokenValue = Value.singleton (policyId cInfo) (tdToken $ tdTrade datum) 1
 
         -- The value we expect on the script input based on
         -- datum.
-        expectedScriptValue :: Value
-        !expectedScriptValue = tokenValue <> Ada.lovelaceValueOf (maybe 0 bdBid $ adHighestBid datum)
+        expectedScriptValue :: Integer -> Value
+        expectedScriptValue val = tokenValue <> Ada.lovelaceValueOf val
 
         actualScriptValue :: Value
         !actualScriptValue = getOnlyScriptInput info
         -- Ensure the value is on the script address and there is
         -- only one script input.
         correctInputValue :: Bool
-        !correctInputValue = actualScriptValue `Value.geq` expectedScriptValue
+        !correctInputValue = case redeemer of 
+          (Buy OfferDetails{..}) -> 
+            actualScriptValue `Value.geq` expectedScriptValue requestedAmount
+          (Close) -> False
 
         -- Helper to make sure the pkh is paid at least the value.
         getsValue :: PubKeyHash -> Value -> Bool
@@ -284,10 +251,10 @@ mkAuctionValidator datum redeemer ctx =
 
 auctionTypedValidator :: Scripts.TypedValidator Auctioning
 auctionTypedValidator = Scripts.mkTypedValidator @Auctioning
-    $$(PlutusTx.compile [|| mkAuctionValidator ||])
+    ($$(PlutusTx.compile [|| mkAuctionValidator ||]) `PlutusTx.applyCode` PlutusTx.liftCode contractInfo)
     $$(PlutusTx.compile [|| wrap ||])
   where
-    wrap = Scripts.wrapValidator @AuctionDatum @AuctionRedeemer
+    wrap = Scripts.wrapValidator @TradeDatum @TradeRedeemer
 
 auctionValidator :: Validator
 auctionValidator = Scripts.validatorScript auctionTypedValidator
